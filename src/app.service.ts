@@ -44,14 +44,14 @@ export class AppService {
       try {
         vttList.push(await this.convertSrtStreamToVtt(file));
       } catch (error) {
-        console.error('Error converting stream:', error);
+        throw new HttpException(error, HttpStatus.I_AM_A_TEAPOT);
       }
     }
 
     return vttList;
   }
 
-  async files(magnet: string) {
+  async subtitles(magnet: string) {
     try {
       const client = await this.Client();
 
@@ -59,28 +59,17 @@ export class AppService {
         client.add(
           magnet,
           { storeCacheSlots: 0, destroyStoreOnDestroy: true },
-          async (torrent) => {
-            const videos = torrent.files.filter((file) =>
-              file.name.endsWith('.mp4'),
-            );
-
-            const subtitles = await this.convertSrtStreamsToVttList(
-              torrent.files
-                .filter((file) => file.name.endsWith('.srt'))
-                .map((file) => ({
-                  name: file.name,
-                  stream: file.createReadStream(),
-                })),
-            );
-
+          (torrent) => {
             resolve(
-              videos.map((file) => ({
-                name: file.name,
-                subtitles,
-              })),
+              this.convertSrtStreamsToVttList(
+                torrent.files
+                  .filter((file) => file.name.endsWith('.srt'))
+                  .map((file) => ({
+                    name: file.name,
+                    stream: file.createReadStream(),
+                  })),
+              ),
             );
-
-            client.destroy();
           },
         );
       });
@@ -89,12 +78,7 @@ export class AppService {
     }
   }
 
-  async stream(
-    magnet: string,
-    filename: string,
-    request: Request,
-    response: Response,
-  ) {
+  async stream(magnet: string, request: Request, response: Response) {
     try {
       const client = await this.Client();
 
@@ -102,10 +86,14 @@ export class AppService {
         magnet,
         { storeCacheSlots: 0, destroyStoreOnDestroy: true },
         (torrent) => {
-          const file = torrent.files.find((file) => file.name === filename);
+          const video = torrent.files.find((file) =>
+            file.name.endsWith('.mp4'),
+          );
 
-          if (!file) {
-            throw new HttpException('File not found', HttpStatus.NOT_FOUND);
+          if (!video) {
+            response.status(404);
+
+            return response.end();
           }
 
           response.set({
@@ -115,14 +103,14 @@ export class AppService {
             'Content-Type': 'video/mp4',
           });
 
-          const range = rangeParser(file.length, request.headers.range || '');
+          const range = rangeParser(video.length, request.headers.range || '');
 
           if (Array.isArray(range)) {
             response.status(206);
 
             response.setHeader(
               'Content-Range',
-              `bytes ${range[0].start}-${range[0].end}/${file.length}`,
+              `bytes ${range[0].start}-${range[0].end}/${video.length}`,
             );
 
             response.setHeader(
@@ -132,10 +120,10 @@ export class AppService {
           } else {
             response.status(200);
 
-            response.setHeader('Content-Length', file.length);
+            response.setHeader('Content-Length', video.length);
           }
 
-          const iterator = file[Symbol.asyncIterator](range?.[0]);
+          const iterator = video[Symbol.asyncIterator](range?.[0]);
 
           const stream = Readable.from(iterator);
 
