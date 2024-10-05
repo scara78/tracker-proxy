@@ -2,14 +2,16 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
 import { parse, stringify } from 'subtitle';
 import { Response, Request } from 'express';
 import rangeParser from 'range-parser';
+import { WebTorrentProvider } from './webtorrent.service';
+import type { Instance, Torrent } from 'webtorrent';
 import { Readable } from 'stream';
 
 @Injectable()
 export class AppService {
-  private async Client() {
-    const WebTorrent = await import('webtorrent');
+  client: Instance;
 
-    return new WebTorrent.default({ utp: false });
+  constructor(webtorrent: WebTorrentProvider) {
+    this.client = webtorrent.client;
   }
 
   async convertSrtStreamToVtt({
@@ -51,97 +53,80 @@ export class AppService {
     return vttList;
   }
 
-  async subtitles(magnet: string) {
-    try {
-      const client = await this.Client();
+  async torrent(magnet: string) {
+    const torrent = this.client.get(magnet) as unknown as Promise<Torrent>;
 
-      return new Promise((resolve) => {
-        client.add(
-          magnet,
-          { storeCacheSlots: 0, destroyStoreOnDestroy: true },
-          (torrent) => {
-            resolve(
-              this.convertSrtStreamsToVttList(
-                torrent.files
-                  .filter((file) => file.name.endsWith('.srt'))
-                  .map((file) => ({
-                    name: file.name,
-                    stream: file.createReadStream(),
-                  })),
-              ),
-            );
-          },
+    return torrent.then(async (torrent) => {
+      if (torrent) {
+        if (torrent?.ready) return torrent;
+
+        return new Promise<Torrent>((resolve) =>
+          torrent.on('ready', () => resolve(torrent)),
         );
-      });
-    } catch (error) {
-      throw new HttpException(error, HttpStatus.I_AM_A_TEAPOT);
-    }
+      }
+
+      return new Promise<Torrent>((resolve) =>
+        this.client.add(magnet, (torrent) => resolve(torrent)),
+      );
+    });
+  }
+
+  async subtitles(magnet: string) {
+    return new Promise(async (resolve) => {
+      const torrent = await this.torrent(magnet);
+
+      resolve(
+        this.convertSrtStreamsToVttList(
+          torrent.files
+            .filter((file) => file.name.endsWith('.srt'))
+            .map((file) => ({
+              name: file.name,
+              stream: file.createReadStream(),
+            })),
+        ),
+      );
+    });
   }
 
   async stream(magnet: string, request: Request, response: Response) {
-    try {
-      const client = await this.Client();
+    const torrent = await this.torrent(magnet);
 
-      client.add(
-        magnet,
-        { storeCacheSlots: 0, destroyStoreOnDestroy: true },
-        (torrent) => {
-          const video = torrent.files.find((file) =>
-            file.name.endsWith('.mp4'),
-          );
+    const video = torrent.files.find((file) => file.name.endsWith('.mp4'));
 
-          if (!video) {
-            response.status(404);
+    if (!video) {
+      response.status(404);
 
-            return response.end();
-          }
-
-          response.set({
-            Expires: '0',
-            'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
-            'Accept-Ranges': 'bytes',
-            'Content-Type': 'video/mp4',
-          });
-
-          const range = rangeParser(video.length, request.headers.range || '');
-
-          if (Array.isArray(range)) {
-            response.status(206);
-
-            response.setHeader(
-              'Content-Range',
-              `bytes ${range[0].start}-${range[0].end}/${video.length}`,
-            );
-
-            response.setHeader(
-              'Content-Length',
-              range[0].end - range[0].start + 1,
-            );
-          } else {
-            response.status(200);
-
-            response.setHeader('Content-Length', video.length);
-          }
-
-          const iterator = video[Symbol.asyncIterator](range?.[0]);
-
-          const stream = Readable.from(iterator);
-
-          stream.pipe(response);
-
-          const destroy = () => {
-            stream.destroy();
-            client.destroy();
-          };
-
-          request.on('close', destroy);
-          request.on('end', destroy);
-
-          return response;
-        },
-      );
-    } catch (error) {
-      throw new HttpException(error, HttpStatus.I_AM_A_TEAPOT);
+      return response.end();
     }
+
+    response.set({
+      Expires: '0',
+      'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+      'Accept-Ranges': 'bytes',
+      'Content-Type': 'video/mp4',
+    });
+
+    const range = rangeParser(video.length, request.headers.range || '');
+
+    if (Array.isArray(range)) {
+      response.status(206);
+
+      response.setHeader(
+        'Content-Range',
+        `bytes ${range[0].start}-${range[0].end}/${video.length}`,
+      );
+
+      response.setHeader('Content-Length', range[0].end - range[0].start + 1);
+    } else {
+      response.status(200);
+
+      response.setHeader('Content-Length', video.length);
+    }
+
+    const iterator = video[Symbol.asyncIterator](range?.[0]);
+
+    const stream = Readable.from(iterator);
+
+    stream.pipe(response);
   }
 }
