@@ -1,12 +1,18 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ConfigService } from '@nestjs/config';
+import { readFileSync } from 'fs';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    httpsOptions: process.env.SSL_KEY_PATH
+      ? {
+          key: readFileSync(process.env.SSL_KEY_PATH),
+          cert: readFileSync(process.env.SSL_CERT_PATH),
+        }
+      : undefined,
+  });
 
-  const configService = app.get(ConfigService);
-  const origins = configService.get<string>('ALLOWED_ORIGINS');
+  const origins = process.env.ALLOWED_ORIGINS;
   const origin = origins.split(',');
 
   app.enableCors({ origin });
