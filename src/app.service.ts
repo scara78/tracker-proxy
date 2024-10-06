@@ -5,6 +5,7 @@ import rangeParser from 'range-parser';
 import { WebTorrentProvider } from './webtorrent.service';
 import type { Instance, Torrent } from 'webtorrent';
 import { Readable } from 'stream';
+import { rm } from 'fs';
 
 @Injectable()
 export class AppService {
@@ -53,27 +54,59 @@ export class AppService {
     return vttList;
   }
 
-  async torrent(magnet: string) {
+  async torrent(magnet: string, request: Request) {
     const torrent = this.client.get(magnet) as unknown as Promise<Torrent>;
+
+    const clearCache = (torrent: Torrent) => {
+      const clear = () =>
+        rm(
+          `${torrent.path}/${torrent.name}`,
+          {
+            recursive: true,
+            force: true,
+          },
+          (error) => {
+            if (!error) return;
+
+            console.log('Remove files error: ', error);
+          },
+        );
+
+      request.once('close', clear);
+      request.once('end', clear);
+    };
 
     return torrent.then(async (torrent) => {
       if (torrent) {
         if (torrent?.ready) return torrent;
 
         return new Promise<Torrent>((resolve) =>
-          torrent.on('ready', () => resolve(torrent)),
+          torrent.on('ready', () => {
+            clearCache(torrent);
+            resolve(torrent);
+          }),
         );
       }
 
       return new Promise<Torrent>((resolve) =>
-        this.client.add(magnet, (torrent) => resolve(torrent)),
+        this.client.add(
+          magnet,
+          {
+            destroyStoreOnDestroy: true,
+            storeCacheSlots: 0,
+          },
+          (torrent) => {
+            clearCache(torrent);
+            resolve(torrent);
+          },
+        ),
       );
     });
   }
 
-  async subtitles(magnet: string) {
+  async subtitles(magnet: string, request: Request) {
     return new Promise(async (resolve) => {
-      const torrent = await this.torrent(magnet);
+      const torrent = await this.torrent(magnet, request);
 
       resolve(
         this.convertSrtStreamsToVttList(
@@ -89,7 +122,7 @@ export class AppService {
   }
 
   async stream(magnet: string, request: Request, response: Response) {
-    const torrent = await this.torrent(magnet);
+    const torrent = await this.torrent(magnet, request);
 
     const video = torrent.files.find((file) => file.name.endsWith('.mp4'));
 

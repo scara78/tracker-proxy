@@ -7,8 +7,8 @@ export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Get('/subtitles')
-  subtitles(@Query('magnet') magnet: string) {
-    return this.appService.subtitles(magnet);
+  subtitles(@Query('magnet') magnet: string, @Req() request: Request) {
+    return this.appService.subtitles(magnet, request);
   }
 
   @Get('/stream')
