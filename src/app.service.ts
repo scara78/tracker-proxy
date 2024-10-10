@@ -1,11 +1,12 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+
 import { parse, stringify } from 'subtitle';
 import { Response, Request } from 'express';
 import rangeParser from 'range-parser';
-import { WebTorrentProvider } from './webtorrent.service';
 import type { Instance, Torrent } from 'webtorrent';
 import { Readable } from 'stream';
-import { rm } from 'fs';
+
+import { WebTorrentProvider } from './webtorrent.service';
 
 @Injectable()
 export class AppService {
@@ -47,66 +48,41 @@ export class AppService {
       try {
         vttList.push(await this.convertSrtStreamToVtt(file));
       } catch (error) {
-        throw new HttpException(error, HttpStatus.I_AM_A_TEAPOT);
+        console.log('Subtitles converting error: ', error);
+
+        return vttList;
       }
     }
 
     return vttList;
   }
 
-  async torrent(magnet: string, request: Request) {
-    const torrent = this.client.get(magnet) as unknown as Promise<Torrent>;
+  async torrent(magnet: string): Promise<Torrent> {
+    const torrent = await this.client.get(magnet);
 
-    const clearCache = (torrent: Torrent) => {
-      const clear = () =>
-        rm(
-          `${torrent.path}/${torrent.name}`,
-          {
-            recursive: true,
-            force: true,
-          },
-          (error) => {
-            if (!error) return;
-
-            console.log('Remove files error: ', error);
-          },
-        );
-
-      request.once('close', clear);
-      request.once('end', clear);
-    };
-
-    return torrent.then(async (torrent) => {
-      if (torrent) {
-        if (torrent?.ready) return torrent;
-
-        return new Promise<Torrent>((resolve) =>
-          torrent.on('ready', () => {
-            clearCache(torrent);
-            resolve(torrent);
-          }),
-        );
-      }
-
-      return new Promise<Torrent>((resolve) =>
+    if (!torrent) {
+      return new Promise((resolve) =>
         this.client.add(
           magnet,
           {
             destroyStoreOnDestroy: true,
             storeCacheSlots: 0,
           },
-          (torrent) => {
-            clearCache(torrent);
-            resolve(torrent);
-          },
+          (torrent) => resolve(torrent),
         ),
       );
-    });
+    }
+
+    if (torrent.ready) return torrent;
+
+    return new Promise<Torrent>((resolve) =>
+      torrent.on('ready', () => resolve(torrent)),
+    );
   }
 
-  async subtitles(magnet: string, request: Request) {
+  async subtitles(magnet: string) {
     return new Promise(async (resolve) => {
-      const torrent = await this.torrent(magnet, request);
+      const torrent = await this.torrent(magnet);
 
       resolve(
         this.convertSrtStreamsToVttList(
@@ -122,7 +98,7 @@ export class AppService {
   }
 
   async stream(magnet: string, request: Request, response: Response) {
-    const torrent = await this.torrent(magnet, request);
+    const torrent = await this.torrent(magnet);
 
     const video = torrent.files.find((file) => file.name.endsWith('.mp4'));
 
@@ -132,14 +108,14 @@ export class AppService {
       return response.end();
     }
 
+    const range = rangeParser(video.length, request.headers.range || '');
+
     response.set({
       Expires: '0',
       'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
       'Accept-Ranges': 'bytes',
       'Content-Type': 'video/mp4',
     });
-
-    const range = rangeParser(video.length, request.headers.range || '');
 
     if (Array.isArray(range)) {
       response.status(206);

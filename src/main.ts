@@ -1,6 +1,8 @@
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+
 import { readFileSync } from 'fs';
+
+import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -13,7 +15,7 @@ async function bootstrap() {
   });
 
   const origins = process.env.ALLOWED_ORIGINS;
-  const origin = origins.split(',');
+  const origin = origins?.split(',');
 
   app.enableCors({ origin });
 
